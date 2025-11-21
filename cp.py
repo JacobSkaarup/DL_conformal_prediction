@@ -1,250 +1,395 @@
 import numpy as np
+import matplotlib.pyplot as plt
+from sklearn import datasets
+from sklearn.model_selection import train_test_split
+from sklearn.neural_network import MLPClassifier
+from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
+from sklearn.base import BaseEstimator, ClassifierMixin
 
-class conformal_metrics():
-    def __init__(self, prediction_sets, test_probs, y_test, labels):
-        self.prediction_sets = prediction_sets
-        self.test_probs = test_probs
-        self.y_test = y_test
-        self.labels = labels
-        self._compute_metrics()
-        self._find_preds()
-        
-    def _compute_metrics(self):
-        self._compute_empirical_coverage()
-        self._compute_singleton_rate()
-        self._compute_singleton_hit_ratio()
-        
-
-    def _compute_empirical_coverage(self):
-        self.empirical_coverage =  self.prediction_sets[np.arange(len(self.test_probs)), self.y_test].mean()
-    
-    def _compute_singleton_rate(self):
-        mask = np.sum(self.prediction_sets, axis=1) == 1
-        if len(mask) == 0:
-            self.singleton_rate = None
-        else:
-            self.singleton_rate = np.mean(mask)
-    
-    def _compute_singleton_hit_ratio(self):
-        mask = np.sum(self.prediction_sets, axis=1) == 1
-        if np.sum(mask) == 0:
-            self.singleton_hit_ratio = None
-        else:
-            self.singleton_hit_ratio = np.mean(self.prediction_sets[np.arange(len(self.test_probs)), self.y_test][mask])
-        
-    def _find_preds(self):
-        preds = {}
-        for i in range(len(self.test_probs)):
-            preds[i] = [self.labels[j] for j in np.where(self.prediction_sets[i])[0]]
-        self.preds = preds
-    
-
-class TPS_conformal(conformal_metrics):
-    def __init__(self, cal_probs, y_cal, test_probs, y_test, labels, alpha=0.1, disallow_zero_sets=True):
-        self.cal_probs = cal_probs
-        self.y_cal = y_cal
-        self.test_probs = test_probs
-        self.labels = labels
+# ==========================================
+# 1. BASE CONFORMAL CLASS
+# ==========================================
+class BaseConformal(BaseEstimator, ClassifierMixin):
+    """
+    Parent class handling common logic for all Conformal Predictors.
+    """
+    def __init__(self, alpha=0.1, allow_zero_sets=False, rand=True):
         self.alpha = alpha
-        self.disallow_zero_sets = disallow_zero_sets
-        self.cal_scores, self.q_hat, self.prediction_sets = self.calibrate()
-
-        # Get metrics and predictions
-        super().__init__(self.prediction_sets, test_probs, y_test, labels)
-
-        
-    def calibrate(self):
-        # Determine quantile level
-        n = len(self.y_cal)
-        q_level = np.ceil((n+1)*(1-self.alpha))/n
-
-        # Calibration scores
-        cal_scores = 1-self.cal_probs[np.arange(n), self.y_cal]
-        q_hat = np.quantile(cal_scores, q_level, method='higher')
-
-        # Compute prediction sets and empirical coverage
-        prediction_sets = self.test_probs >= (1-q_hat)
-
-        # Ensure no empty prediction sets by adding the most probable class
-        if self.disallow_zero_sets:
-            empty_sets = np.where(np.sum(prediction_sets, axis=1) == 0)[0]
-            for i in empty_sets:
-                max_index = np.argmax(self.test_probs[i])
-                prediction_sets[i, max_index] = True
-        
-        return cal_scores, q_hat, prediction_sets
-    
-
-class APS_conformal(conformal_metrics):
-    def __init__(self, cal_probs, y_cal, test_probs, y_test, labels, alpha=0.1, rand=True):
-        self.cal_probs = cal_probs
-        self.y_cal = y_cal
-        self.test_probs = test_probs
-        self.labels = labels
-        self.alpha = alpha
+        self.allow_zero_sets = allow_zero_sets
         self.rand = rand
-        self.cal_scores, self.q_hat, self.prediction_sets = self.calibrate()
-
-        # Get metrics and predictions
-        super().__init__(self.prediction_sets, test_probs, y_test, labels)
+        self.q_hat = None
+        self.n_classes = None
         
+    def _get_quantile(self, scores):
+        """Calculates the (1-alpha) quantile based on calibration scores."""
+        n = len(scores)
+        q_level = np.ceil((n + 1) * (1 - self.alpha)) / n
+        # Clip q_level to 1.0 to avoid floating point errors exceeding max
+        q_level = min(q_level, 1.0)
+        return np.quantile(scores, q_level, method='higher')
+
+    def _finalize_sets(self, mask, original_probs, sort_indices=None):
+        """
+        1. Un-sorts the boolean mask if necessary.
+        2. Enforces non-empty sets if allow_zero_sets is False.
+        """
+        # If data was sorted (APS/RAPS/DAPS), map mask back to original class indices
+        if sort_indices is not None:
+            unsorted_mask = np.zeros_like(mask, dtype=bool)
+            np.put_along_axis(unsorted_mask, sort_indices, mask, axis=1)
+            mask = unsorted_mask
+
+        # Force non-empty sets if required
+        if not self.allow_zero_sets:
+            empty_rows = np.where(mask.sum(axis=1) == 0)[0]
+            if len(empty_rows) > 0:
+                # Add the class with the highest probability
+                top_class = original_probs[empty_rows].argmax(axis=1)
+                mask[empty_rows, top_class] = True
+                
+        return mask
+    
+    def convert_to_sets(self, mask, labels=None):
+        """
+        Converts a boolean mask into a list of lists containing the actual labels.
         
-    def calibrate(self):
-        n = len(self.y_cal)
-        q_level = np.ceil((n+1)*(1-self.alpha))/n
-        cal_range = np.arange(n)
-
-
-        # Compute calibration scores
-        true_prob = self.cal_probs[cal_range, self.y_cal]                                               # true class probabilities
-        cal_pi = self.cal_probs.argsort(1)[:,::-1]                                                      # Indices that would sort probs descending
-        cal_srt = np.take_along_axis(self.cal_probs, cal_pi, axis=1).cumsum(axis=1)                     # Sorted cumulative sums
-        cal_scores = np.take_along_axis(cal_srt, cal_pi.argsort(axis=1), axis=1)[cal_range, self.y_cal] # Get scores for true class
-
-        # Break ties randomly
-        u = np.random.uniform(0, 1, size = n) if self.rand else np.zeros(n)
-        cal_scores = cal_scores - u * true_prob   # Subtract random fraction of true class prob to break ties
-
-
-        # Get the score quantile
-        q_hat = np.quantile(cal_scores, q_level, method='higher')
-
-        # Get prediction sets for test data
-        test_pi = self.test_probs.argsort(1)[:,::-1]                                     # Indices that would sort test probs descending
-        test_srt = np.take_along_axis(self.test_probs, test_pi, axis=1).cumsum(axis=1)   # Sorted cumulative sums
-
-        # Define prediction sets
-        mask = test_srt < q_hat                                                         # classes strictly below qhat
-        first_cross = (test_srt >= q_hat).argmax(axis=1)                                # index of first crossing
-        mask[np.arange(len(mask)), first_cross] = True                                  # ensure inclusion of crossing class
-        prediction_sets = np.take_along_axis(mask, test_pi.argsort(axis=1), axis=1)     # Get prediction sets
-
-
-        return cal_scores, q_hat, prediction_sets
+        Parameters:
+        -----------
+        mask : np.array of shape (n_samples, n_classes)
+            The boolean output from .predict()
+        labels : list or np.array, optional
+            A list of class names (e.g., ['cat', 'dog', 'fish']).
+            If None, returns the numerical indices (e.g., [0, 1]).
+            
+        Returns:
+        --------
+        list of lists
+            e.g. [['cat', 'dog'], ['fish'], []]
+        """
+        # Convert to indices (list of arrays)
+        prediction_indices = [np.where(row)[0] for row in mask]
         
+        # Map to indices if no labels provided
+        if labels is None:
+            return [idxs.tolist() for idxs in prediction_indices]
+        
+        # Map indices to labels
+        labels = np.array(labels) # Ensure it's an array for easy indexing
+        return [labels[idxs].tolist() for idxs in prediction_indices]
 
-class RAPS_conformal(conformal_metrics):
-    def __init__(self, cal_probs, y_cal, test_probs, y_test, labels, alpha=0.1, k_reg=2, lambda_reg=0.3, disallow_zero_sets=True, rand=True):
-        self.cal_probs = cal_probs
-        self.y_cal = y_cal
-        self.test_probs = test_probs
-        self.y_test = y_test
-        self.labels = labels
-        self.alpha = alpha
+# ==========================================
+# 2. CONFORMAL METHODS (TPS, APS, RAPS, DAPS)
+# ==========================================
+
+class TPS(BaseConformal):
+    def fit(self, cal_probs, y_cal):
+        """
+        Trains TPS by computing calibration scores and quantile.
+        Parameters:
+        cal_probs : np.array of shape (n_cal_samples, n_classes)
+            Predicted probabilities on calibration set.
+            y_cal : np.array of shape (n_cal_samples,)
+            True class labels for calibration set.
+        """
+        n = len(y_cal)
+
+        # Score = 1 - true_class_prob
+        cal_scores = 1 - cal_probs[np.arange(n), y_cal]
+        self.q_hat = self._get_quantile(cal_scores)
+        return self
+
+    def predict(self, test_probs):
+        """
+        Generates prediction sets for test data.
+        Parameters:
+        test_probs : np.array of shape (n_test_samples, n_classes)
+            Predicted probabilities on test set.
+        Returns:
+        np.array of shape (n_test_samples, n_classes)
+            Boolean mask indicating predicted sets.
+        """
+        mask = test_probs >= (1 - self.q_hat)
+        return self._finalize_sets(mask, test_probs, sort_indices=None)
+
+
+class RAPS(BaseConformal):
+    """
+    Regularized Adaptive Prediction Sets. 
+    APS is just RAPS with k_reg=0 and lam_reg=0.
+    """
+    def __init__(self, alpha=0.1, k_reg=2, lam_reg=0.3, allow_zero_sets=False, rand=True):
+        super().__init__(alpha, allow_zero_sets, rand)
         self.k_reg = k_reg
-        self.lambda_reg = lambda_reg
-        self.disallow_zero_sets = disallow_zero_sets
-        self.rand = rand
-        self.cal_scores, self.q_hat, self.prediction_sets = self.calibrate()
+        self.lam_reg = lam_reg
 
-        super().__init__(self.prediction_sets, self.test_probs, self.y_test, self.labels)
-
+    def _compute_reg_scores(self, probs):
+        # Sort probabilities descending
+        pi = probs.argsort(1)[:, ::-1]
+        srt = np.take_along_axis(probs, pi, axis=1)
         
-    def calibrate(self):
-        n_cal = len(self.y_cal)
-        cal_range = np.arange(n_cal)
-        q_level = np.ceil((n_cal+1)*(1-self.alpha))/n_cal
-        u_cal = np.random.uniform(0, 1, size = n_cal) if self.rand else np.zeros(n_cal)
-
-        # Regularization vector
-        reg_vec = np.array(self.k_reg*[0,] + (self.cal_probs.shape[1]-self.k_reg)*[self.lambda_reg,])[None,:]
-
-        # Compute calibration scores
-        cal_pi = self.cal_probs.argsort(1)[:,::-1]; 
-        cal_srt = np.take_along_axis(self.cal_probs,cal_pi,axis=1)
-        cal_srt_reg = cal_srt + reg_vec
-        cal_true = np.where(cal_pi == self.y_cal[:,None])[1]
-        cal_scores = cal_srt_reg.cumsum(axis=1)[cal_range, cal_true] - u_cal * cal_srt_reg[cal_range, cal_true]
-
-        # Get the score quantile
-        q_hat = np.quantile(cal_scores, q_level, method='higher')
+        # Add regularization penalty
+        reg_vec = np.array(self.k_reg*[0,] + (probs.shape[1]-self.k_reg)*[self.lam_reg,])[None,:]
+        srt_reg = srt + reg_vec
         
-        # Get prediction sets for test data
-        n_test = self.test_probs.shape[0]
-        u_test = np.random.uniform(0, 1, size = n_test) if self.rand else np.zeros(n_test)
+        return pi, srt_reg
 
-        val_pi = self.test_probs.argsort(1)[:,::-1]
-        val_srt = np.take_along_axis(self.test_probs,val_pi,axis=1)
-        val_srt_reg = val_srt + reg_vec
-        mask = (val_srt_reg.cumsum(axis=1) - u_test[:,None] * val_srt_reg) <= q_hat if self.rand else val_srt_reg.cumsum(axis=1) - val_srt_reg <= q_hat
-        if self.disallow_zero_sets:
-            mask[:,0] = True
+    def fit(self, cal_probs, y_cal):
+        """
+        Trains RAPS by computing calibration scores and quantile.
+        Parameters:
+        cal_probs : np.array of shape (n_cal_samples, n_classes)
+            Predicted probabilities on calibration set.
+        y_cal : np.array of shape (n_cal_samples,)
+            True class labels for calibration set.
+        """
+        n = len(y_cal)
+        pi, srt_reg = self._compute_reg_scores(cal_probs)
         
-        prediction_sets = np.take_along_axis(mask, val_pi.argsort(axis=1), axis=1)
+        # Get score of the true class location
+        # map y_cal to the sorted indices
+        cal_true_loc = np.where(pi == y_cal[:, None])[1]
+        
+        # Randomized Cumulative Sum
+        u = np.random.uniform(0, 1, size=n) if self.rand else np.zeros(n)
+        # Score = Cumulative_Sum_at_True - (Random * Current_Val_at_True)
+        scores = srt_reg.cumsum(axis=1)[np.arange(n), cal_true_loc] - u * srt_reg[np.arange(n), cal_true_loc]
+        
+        self.q_hat = self._get_quantile(scores)
+        return self
 
-        return cal_scores, q_hat, prediction_sets
-    
-class DAPS_conformal(conformal_metrics):
-    def __init__(self, cal_probs, y_cal, cal_clusters, test_probs, y_test, test_clusters, labels, alpha=0.1, lam_reg=0.3, k_reg=2, beta = 0.1, disallow_zero_sets=True, rand=True):
-        self.cal_probs = cal_probs
-        self.y_cal = y_cal
-        self.cal_clusters = cal_clusters
-        self.test_probs = test_probs
-        self.y_test = y_test
-        self.test_clusters = test_clusters
-        self.labels = labels
-        self.alpha = alpha
+    def predict(self, test_probs):
+        """
+        Generates prediction sets for test data.
+        Parameters:
+        test_probs : np.array of shape (n_test_samples, n_classes)
+            Predicted probabilities on test set.
+
+        returns:
+        np.array of shape (n_test_samples, n_classes)
+            Boolean mask indicating predicted sets.
+        """
+        n = len(test_probs)
+        pi, srt_reg = self._compute_reg_scores(test_probs)
+        
+        u = np.random.uniform(0, 1, size=n) if self.rand else np.zeros(n)
+        
+        # Include if (CumSum - U*Current) <= Q
+        mask = (srt_reg.cumsum(axis=1) - u[:, None] * srt_reg) <= self.q_hat
+        
+        return self._finalize_sets(mask, test_probs, sort_indices=pi)
+
+
+class DAPS(BaseConformal):
+    """
+    Diffused Adaptive Prediction Sets.
+    Fix: Learns cluster means on Calibration data, applies them to Test data.
+    """
+    def __init__(self, alpha=0.1, lam_reg=0.3, k_reg=2, beta=0.1, allow_zero_sets=False, rand=True):
+        super().__init__(alpha, allow_zero_sets, rand)
         self.lam_reg = lam_reg
         self.k_reg = k_reg
         self.beta = beta
-        self.rand = rand
-        self.disallow_zero_sets = disallow_zero_sets
-        self.cal_scores, self.q_hat, self.prediction_sets = self.calibrate()
+        self.cluster_means_ = {}
+        self.global_mean_ = 0
 
-        super().__init__(self.prediction_sets, self.test_probs, self.y_test, self.labels)
+    def _compute_reg_scores(self, probs):
+        # Reusing RAPS logic for base scores
+        pi = probs.argsort(1)[:, ::-1]
+        srt = np.take_along_axis(probs, pi, axis=1)
+        reg_vec = np.array(self.k_reg*[0,] + (probs.shape[1]-self.k_reg)*[self.lam_reg,])[None,:]
+        return pi, srt + reg_vec
 
+    def fit(self, cal_probs, y_cal, cal_clusters):
+        """
+        Trains DAPS by computing diffused calibration scores and quantile.
+        Parameters:
+        cal_probs : np.array of shape (n_cal_samples, n_classes)
+            Predicted probabilities on calibration set.
+        y_cal : np.array of shape (n_cal_samples,)
+            True class labels for calibration set.
+        cal_clusters : np.array of shape (n_cal_samples,)
+            Cluster assignments for calibration samples.
+        """
+        # 1. Get Base Scores
+        n = len(y_cal)
+        pi, srt_reg = self._compute_reg_scores(cal_probs)
+        cal_true_loc = np.where(pi == y_cal[:, None])[1]
+        u = np.random.uniform(0, 1, size=n) if self.rand else np.zeros(n)
         
-    def calibrate(self):
-        # Determine quantile level
-        n_cal = len(self.y_cal)
-        cal_range = np.arange(n_cal)
-        q_level = np.ceil((n_cal+1)*(1-self.alpha))/n_cal
-        u_cal = np.random.uniform(0, 1, size = n_cal) if self.rand else np.zeros(n_cal)
-
-        # Regularization vector
-        reg_vec = np.array(self.k_reg*[0,] + (self.cal_probs.shape[1]-self.k_reg)*[self.lam_reg,])[None,:]
-
-        # Compute calibration scores
-        cal_pi = self.cal_probs.argsort(1)[:,::-1]; 
-        cal_srt = np.take_along_axis(self.cal_probs,cal_pi,axis=1)
-        cal_srt_reg = cal_srt + reg_vec
-        cal_true = np.where(cal_pi == self.y_cal[:,None])[1]
-        cal_scores = cal_srt_reg.cumsum(axis=1)[cal_range, cal_true] - u_cal * cal_srt_reg[cal_range, cal_true]
-
-        # Diffuse scores with neighboring cluster scores
-        diff_scores = cal_scores.copy()
-        cluster_means = {}
-
-        for cluster in np.unique(self.cal_clusters):
-            cluster_means[cluster] = np.mean(cal_scores[self.cal_clusters == cluster], axis=0)                   # compute cluster mean score
-            indices = np.where(self.cal_clusters == cluster)[0]                                                  # get indices of points in cluster
-            diff_scores[indices] = (1 - self.beta) * cal_scores[indices] + self.beta * cluster_means[cluster]    # diffuse scores
-
-        # Get the score quantile
-        q_hat = np.quantile(diff_scores, q_level, method='higher')
+        # Raw scores before diffusion
+        raw_scores = srt_reg.cumsum(axis=1)[np.arange(n), cal_true_loc] - u * srt_reg[np.arange(n), cal_true_loc]
         
+        # 2. Learn Cluster Means
+        self.global_mean_ = np.mean(raw_scores)
+        diff_scores = raw_scores.copy()
+        
+        for cluster in np.unique(cal_clusters):
+            idx = (cal_clusters == cluster)
+            mean_score = np.mean(raw_scores[idx])
+            self.cluster_means_[cluster] = mean_score
+            # Diffuse calibration scores
+            diff_scores[idx] = (1 - self.beta) * raw_scores[idx] + self.beta * mean_score
+
+        self.q_hat = self._get_quantile(diff_scores)
+        return self
+
+    def predict(self, test_probs, test_clusters):
+        """
+        Generates prediction sets for test data.
+        Parameters:
+        test_probs : np.array of shape (n_test_samples, n_classes)
+            Predicted probabilities on test set.
+        test_clusters : np.array of shape (n_test_samples,)
+            Cluster assignments for test samples.
+        
+        returns:
+        np.array of shape (n_test_samples, n_classes)
+            Boolean mask indicating predicted sets.
+        """
+        # 1. Get Base Test Scores
+        n = len(test_probs)
+        pi, srt_reg = self._compute_reg_scores(test_probs)
+        
+        # Construct base scores for every class position
+        base_scores_grid = srt_reg
+        
+        # 2. Diffuse Test Scores using CALIBRATION means
+        diffused_grid = base_scores_grid.copy()
+        
+        for cluster in np.unique(test_clusters):
+            idx = np.where(test_clusters == cluster)[0]
+            # Safety: use global mean if cluster was not seen in calibration
+            c_mean = self.cluster_means_.get(cluster, self.global_mean_)
             
-        # Get base prediction scores for test data
-        n_test = self.test_probs.shape[0]
-        u_test = np.random.uniform(0, 1, size = n_test) if self.rand else np.zeros(n_test)
+            # Note: In DAPS paper, diffusion is usually on the score vector. 
+            # We approximate this by diffusing the base regularization values.
+            diffused_grid[idx] = (1 - self.beta) * base_scores_grid[idx] + self.beta * c_mean
 
-        test_pi = self.test_probs.argsort(1)[:,::-1]
-        test_srt = np.take_along_axis(self.test_probs, test_pi, axis=1)
-        test_scores_base = test_srt + reg_vec
-
-        # Diffuse test scores based on cluster assignments
-        test_scores = test_scores_base.copy()
-
-        for cluster in np.unique(self.test_clusters):
-            indices = np.where(self.test_clusters == cluster)[0]
-            test_scores[indices] = (1 - self.beta) * test_scores_base[indices] + self.beta * cluster_means[cluster]
-
-
-        # Define prediction sets
-        mask = (test_scores.cumsum(axis=1) - u_test[:, None] * test_scores) <= q_hat if self.rand else test_scores.cumsum(axis=1) - test_scores <= q_hat
-        if self.disallow_zero_sets: 
-            mask[:, 0] = True
-
-        prediction_sets = np.take_along_axis(mask, test_pi.argsort(axis=1), axis=1)
+        # 3. Generate Sets
+        u = np.random.uniform(0, 1, size=n) if self.rand else np.zeros(n)
         
-        return cal_scores, q_hat, prediction_sets
+        # Check threshold
+        # Note: DAPS usually checks cumulative sums of diffused values
+        mask = (diffused_grid.cumsum(axis=1) - u[:, None] * diffused_grid) <= self.q_hat
+        
+        return self._finalize_sets(mask, test_probs, sort_indices=pi)
+
+# ==========================================
+# 3. METRICS CLASS
+# ==========================================
+
+def ConformalMetrics(prediction_mask, y_true):
+        """
+        Computes key metrics for conformal prediction sets.
+        Parameters:
+        -----------
+        prediction_mask : np.array of shape (n_samples, n_classes)
+            Boolean mask indicating predicted sets.
+            y_true : np.array of shape (n_samples,)
+            True class labels.
+            
+        Returns:
+        --------
+        dict
+            returns a dictionary with keys:
+            - "Coverage": Fraction of times true label is in set
+            - "Avg Set Size": Average size of prediction sets
+            - "Singleton Rate": Fraction of sets with size 1
+            - "Singleton Hit": Coverage when set size is 1
+        """
+        n = len(y_true)
+        
+        # 1. Coverage (Fraction of times true label is in set)
+        covered = prediction_mask[np.arange(n), y_true]
+        coverage = np.mean(covered)
+        
+        # 2. Average Set Size
+        set_sizes = np.sum(prediction_mask, axis=1)
+        avg_size = np.mean(set_sizes)
+        
+        # 3. Singleton Rate (Fraction of sets with size 1)
+        is_singleton = (set_sizes == 1)
+        singleton_rate = np.mean(is_singleton)
+        
+        # 4. Singleton Hit Rate (Coverage with set size == 1)
+        if np.sum(is_singleton) > 0:
+            singleton_hit = np.mean(covered[is_singleton])
+        else:
+            singleton_hit = 0.0
+            
+        return {
+            "Coverage": coverage,
+            "Avg Set Size": avg_size,
+            "Singleton Rate": singleton_rate,
+            "Singleton Hit": singleton_hit
+        }
+
+# ==========================================
+# 4. MAIN SCRIPT
+# ==========================================
+
+if __name__ == "__main__":
+    # --- A. Data Generation ---
+    print("Generating Data...")
+    X, y = datasets.make_classification(n_samples=10000, n_features=20, n_classes=10, n_informative=15, random_state=42)
+
+    # --- B. Robust Splitting (60/20/10/10) ---
+    # 1. Split Train (60%) vs Rest (40%)
+    X_train, X_rest, y_train, y_rest = train_test_split(X, y, train_size=0.6, random_state=42)
+    
+    # 2. Split Rest into Val (20% total -> 50% of rest) vs Cal/Test
+    X_val, X_rest2, y_val, y_rest2 = train_test_split(X_rest, y_rest, test_size=0.5, random_state=42)
+    
+    # 3. Split Remainder into Cal (10% total -> 50% of remainder) vs Test (10% total)
+    X_cal, X_test, y_cal, y_test = train_test_split(X_rest2, y_rest2, test_size=0.5, random_state=42)
+
+    print(f"Train: {len(y_train)}, Val: {len(y_val)}, Cal: {len(y_cal)}, Test: {len(y_test)}")
+
+    # --- C. Model Training ---
+    print("Training MLP...")
+    model = MLPClassifier(hidden_layer_sizes=(50,5), activation='relu', solver='adam', max_iter=5000, random_state=42)
+    model.fit(X_train, y_train)
+
+    # Get Probabilities
+    cal_probs = model.predict_proba(X_cal)
+    test_probs = model.predict_proba(X_test)
+
+    # --- D. Clustering (For DAPS) ---
+    print("Running PCA + KMeans for DAPS...")
+    pca = PCA(n_components=10)
+    X_train_pca = pca.fit_transform(X_train)
+    
+    cluster_model = KMeans(n_clusters=10, random_state=42)
+    cluster_model.fit(X_train_pca)
+
+    cal_clusters = cluster_model.predict(pca.transform(X_cal))
+    test_clusters = cluster_model.predict(pca.transform(X_test))
+
+    # --- E. Run Conformal Prediction ---
+    
+    print("\n--- RESULTS (Target Alpha = 0.1) ---")
+    
+    # 1. TPS
+    tps = TPS(alpha=0.1, allow_zero_sets=False)
+    tps.fit(cal_probs, y_cal)
+    tps_sets = tps.predict(test_probs)
+    print("\nTPS Metrics:", ConformalMetrics(tps_sets, y_test).get_metrics())
+
+    # 2. APS (RAPS with lambda=0)
+    aps = RAPS(alpha=0.1, k_reg=0, lam_reg=0.0, allow_zero_sets=False)
+    aps.fit(cal_probs, y_cal)
+    aps_sets = aps.predict(test_probs)
+    print("APS Metrics:", ConformalMetrics(aps_sets, y_test).get_metrics())
+
+    # 3. RAPS
+    raps = RAPS(alpha=0.1, k_reg=2, lam_reg=0.01, allow_zero_sets=False) # Small lambda for toy data
+    raps.fit(cal_probs, y_cal)
+    raps_sets = raps.predict(test_probs)
+    print("RAPS Metrics:", ConformalMetrics(raps_sets, y_test).get_metrics())
+
+    # 4. DAPS
+    daps = DAPS(alpha=0.1, k_reg=2, lam_reg=0.01, beta=0.2, allow_zero_sets=False)
+    daps.fit(cal_probs, y_cal, cal_clusters)
+    daps_sets = daps.predict(test_probs, test_clusters)
+    print("DAPS Metrics:", ConformalMetrics(daps_sets, y_test).get_metrics())
