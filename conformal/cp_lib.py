@@ -4,9 +4,69 @@ from sklearn.neural_network import MLPClassifier
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.utils.validation import check_is_fitted
 import numpy as np
+import torch
+import torch.nn as nn
 
 # ==========================================
-# 1. BASE CONFORMAL CLASS
+# 1. PyTorch Adapter
+# ==========================================
+
+class TorchAdapter(BaseEstimator, ClassifierMixin):
+    """
+    Adapts a trained PyTorch nn.Module (like your FFNN head) 
+    to conform to the Scikit-Learn classifier interface.
+    """
+    def __init__(self, model, classes, device='cpu'):
+        # model: The PyTorch nn.Module (e.g., your FFNN head)
+        self.model = model
+        # classes: Required for Scikit-Learn compatibility (e.g., [0, 1, ..., 9])
+        self.classes = classes
+        self.classes_ = np.array(classes)
+        self.device = device
+        
+        # Ensure the model is on the correct device
+        self.model.to(self.device)
+
+    def fit(self, X, y=None):
+        """
+        Since we assume the PyTorch model is already trained, 
+        this method does nothing but satisfy the Scikit-Learn interface.
+        """
+        # Note: If you wanted to *fine-tune* the head here, you would add that logic.
+        return self
+
+    def predict_logits(self, X):
+        """Returns raw logits (pre-softmax) from the PyTorch model."""
+        self.model.eval()
+        
+        with torch.no_grad():
+            X_tensor = torch.tensor(X, dtype=torch.float32, device=self.device)
+            # Forward pass
+            logits = self.model(X_tensor)
+            
+            # Return NumPy array
+            return logits.cpu().numpy()
+
+    def predict_proba(self, X):
+        """Returns softmax probabilities."""
+        logits_np = self.predict_logits(X)
+        
+        # Convert logits back to tensor to apply softmax efficiently
+        logits_tensor = torch.from_numpy(logits_np)
+        probabilities = nn.functional.softmax(logits_tensor, dim=1)
+        
+        # Return NumPy array
+        return probabilities.numpy()
+
+    def predict(self, X):
+        """Returns the predicted class label (not strictly needed by CP, but good practice)."""
+        probs = self.predict_proba(X)
+        return self.classes_[np.argmax(probs, axis=1)]
+    
+
+
+# ==========================================
+# 2. BASE CONFORMAL CLASS
 # ==========================================
 class BaseConformalClassifier(BaseEstimator, ClassifierMixin):
     def __init__(self, head_model, alpha=0.1, allow_zero_sets=True, rand=True):
@@ -28,6 +88,7 @@ class BaseConformalClassifier(BaseEstimator, ClassifierMixin):
         
         # 2. Calculate Scores
         scores = self._get_scores(cal_probs, y)
+        self.scores = scores
         
         # 3. Compute Quantile
         n = len(y)
@@ -41,6 +102,7 @@ class BaseConformalClassifier(BaseEstimator, ClassifierMixin):
         
         # Get Matrix Scores
         scores_matrix = self._get_scores(test_probs, y=None)
+        self.scores_matrix = scores_matrix
         
         # Threshold
         mask = scores_matrix <= self.q_hat
@@ -84,7 +146,7 @@ class BaseConformalClassifier(BaseEstimator, ClassifierMixin):
         return [labels[idxs].tolist() for idxs in prediction_indices]
 
 # ==========================================
-# 2. CONFORMAL METHODS (TPS, APS, RAPS, DAPS)
+# 3. CONFORMAL METHODS (TPS, APS, RAPS, DAPS)
 # ==========================================
 
 class TPS(BaseConformalClassifier):
@@ -185,7 +247,7 @@ class DAPS(RAPS): # Inherit from RAPS to reuse _get_scores logic!
         return mask
 
 # ==========================================
-# 3. METRICS FUNCTION
+# 4. METRICS FUNCTION
 # ==========================================
 
 def ConformalMetrics(prediction_mask, y_true):
@@ -235,7 +297,7 @@ def ConformalMetrics(prediction_mask, y_true):
         }
 
 # ==========================================
-# 4. MAIN SCRIPT
+# 5. EXAMPLE USAGE
 # ==========================================
 
 if __name__ == "__main__":

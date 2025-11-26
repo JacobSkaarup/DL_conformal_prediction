@@ -34,9 +34,11 @@ def evaluate_and_save(model, dataloader, device, folder, filename):
             outputs = model(inputs)
 
             results["outputs"].append(outputs.cpu())
-            results["labels"].extend(targets.cpu().numpy())
-            results["indexes"].extend(idx.cpu().numpy())
-            results["latents"].append(latents_batch[0].cpu().numpy())
+            results["latents"].append(latents_batch[0])
+
+            results["labels"].extend(targets.cpu().tolist())
+            results["indexes"].extend(idx.cpu().tolist())
+            
             targets = targets.to(device)
             _, predicted = outputs.max(1)
             total += targets.size(0)
@@ -44,6 +46,13 @@ def evaluate_and_save(model, dataloader, device, folder, filename):
 
 
     handle.remove()
+
+    # Concatenate lists into arrays
+    results["outputs"] = torch.cat(results["outputs"], dim=0).numpy()
+    results["latents"] = torch.cat(results["latents"], dim=0).numpy()
+    results["labels"] = np.array(results["labels"])
+    results["indexes"] = np.array(results["indexes"])
+
 
     torch.save(results, f"{folder}/{filename}")
     accuracy = 100.0 * correct / total

@@ -4,12 +4,24 @@ import numpy as np
 
 class BaseSmoother(BaseEstimator):
     """Interface: Learns patterns in Calibration, Smooths scores in Test."""
+    def __init__(self, feature_extractor=None):
+        # transform_func: A function X -> Features
+        self.feature_extractor = feature_extractor
+
+    def _transform(self, X):
+        """Applies the feature extractor if one exists."""
+        if self.feature_extractor is not None:
+            return self.feature_extractor(X)
+        return X
+
     def fit(self, X, y, scores):
-        return self._fit_internal(X, y, scores)
+        X_feat = self._transform(X)
+        return self._fit_internal(X_feat, y, scores)
     
     def predict_smooth(self, X):
         # Should return the 'signal' (e.g. mean score of neighbors/cluster)
-        return self._predict_internal(X)
+        X_feat = self._transform(X)
+        return self._predict_internal(X_feat)
 
     def _fit_internal(self, X, scores):
         raise NotImplementedError("Child class must implement _fit_internal")
@@ -22,7 +34,8 @@ class ClusterSmoother(BaseSmoother):
     For K-Means, GMMs, Decision Trees.
     Treats the input model as a discrete grouper.
     """
-    def __init__(self, clustering_model):
+    def __init__(self, clustering_model, feature_extractor=None):
+        super().__init__(feature_extractor)
         self.clustering_model = clustering_model
         self.means_ = {}
         self.global_mean_ = 0
@@ -64,7 +77,8 @@ class KNNSmoother(BaseSmoother):
     Instead of discrete clusters, we use the average score of 
     the k-nearest neighbors in the Calibration set.
     """
-    def __init__(self, knn_regressor_):
+    def __init__(self, knn_regressor_, feature_extractor=None):
+        super().__init__(feature_extractor)
         self.knn_regressor_ = knn_regressor_
 
     def _fit_internal(self, X, y, scores):
