@@ -88,7 +88,6 @@ class BaseConformalClassifier(BaseEstimator, ClassifierMixin):
         
         # 2. Calculate Scores
         scores = self._get_scores(cal_probs, y)
-        self.scores = scores
         
         # 3. Compute Quantile
         n = len(y)
@@ -102,7 +101,6 @@ class BaseConformalClassifier(BaseEstimator, ClassifierMixin):
         
         # Get Matrix Scores
         scores_matrix = self._get_scores(test_probs, y=None)
-        self.scores_matrix = scores_matrix
         
         # Threshold
         mask = scores_matrix <= self.q_hat
@@ -144,6 +142,63 @@ class BaseConformalClassifier(BaseEstimator, ClassifierMixin):
         # Map indices to labels
         labels = np.array(labels) # Ensure it's an array for easy indexing
         return [labels[idxs].tolist() for idxs in prediction_indices]
+    
+    def compute_metrics(self, y_true):
+        """
+        Computes key metrics for conformal prediction sets.
+        Parameters:
+        -----------
+        y_true : np.array of shape (n_samples,)
+            True class labels.
+            
+        Returns:
+        --------
+        dict
+            returns a dictionary with keys:
+            - "Coverage": Fraction of times true label is in set
+            - "Avg Set Size": Average size of prediction sets
+            - "Singleton Rate": Fraction of sets with size 1
+            - "Singleton Hit": Coverage when set size is 1
+            - "Class Conditional Coverage": Coverage per class
+        """
+        n = len(y_true)
+        
+        # 1. Coverage (Fraction of times true label is in set)
+        covered = self.mask[np.arange(n), y_true]
+        coverage = np.mean(covered)
+        
+        # 2. Average Set Size
+        set_sizes = np.sum(self.mask, axis=1)
+        avg_size = np.mean(set_sizes)
+        
+        # 3. Singleton Rate (Fraction of sets with size 1)
+        is_singleton = (set_sizes == 1)
+        singleton_rate = np.mean(is_singleton)
+        
+        # 4. Singleton Hit Rate (Coverage with set size == 1)
+        if np.sum(is_singleton) > 0:
+            singleton_hit = np.mean(covered[is_singleton])
+        else:
+            singleton_hit = 0.0
+
+        # 5. Class Conditional Coverage (not returned, but could be useful)
+        cond_cov = np.zeros(len(np.unique(y_true)))
+
+        for label in np.unique(y_true):
+            idx = y_true == label
+            cond_cov[label] = self.mask[idx, label].mean()
+
+        # 6. Maximum absolute deviation from nominal coverage
+        max_abs_dev = np.abs(cond_cov - (1 - self.alpha)).max()
+
+        return {
+            "Empirical coverage": coverage,
+            "Efficiency": avg_size,
+            "Singleton rate": singleton_rate,
+            "Singleton Hit ratio": singleton_hit,
+            "Class Conditional Coverage": cond_cov,
+            "Max Class Conditional Deviation": max_abs_dev
+        }
 
 # ==========================================
 # 3. CONFORMAL METHODS (TPS, APS, RAPS, DAPS)
@@ -165,7 +220,7 @@ class RAPS(BaseConformalClassifier):
     Regularized Adaptive Prediction Sets. 
     APS is just RAPS with k_reg=0 and lam_reg=0.
     """
-    def __init__(self, head_model, alpha=0.1, lam_reg=0.01, k_reg=2, allow_zero_sets=False, rand=True):
+    def __init__(self, head_model, alpha=0.1, lam_reg=0.01, k_reg=2, allow_zero_sets=True, rand=True):
         super().__init__(head_model, alpha, allow_zero_sets, rand)
         self.lam_reg = lam_reg
         self.k_reg = k_reg
@@ -193,7 +248,7 @@ class RAPS(BaseConformalClassifier):
 
 
 class DAPS(RAPS): # Inherit from RAPS to reuse _get_scores logic!
-    def __init__(self, head_model, smoother, alpha=0.1, lam_reg=0.01, k_reg=2, beta=0.2, allow_zero_sets=False, rand=True):
+    def __init__(self, head_model, smoother, alpha=0.1, lam_reg=0.01, k_reg=2, beta=0.2, allow_zero_sets=True, rand=True):
         # We pass head_model to parent
         super().__init__(head_model, alpha, lam_reg, k_reg, allow_zero_sets, rand)
         self.smoother = smoother
@@ -247,54 +302,32 @@ class DAPS(RAPS): # Inherit from RAPS to reuse _get_scores logic!
         return mask
 
 # ==========================================
-# 4. METRICS FUNCTION
+# 4. FUNCTIONS
 # ==========================================
 
-def ConformalMetrics(prediction_mask, y_true):
-        """
-        Computes key metrics for conformal prediction sets.
-        Parameters:
-        -----------
-        prediction_mask : np.array of shape (n_samples, n_classes)
-            Boolean mask indicating predicted sets.
-            y_true : np.array of shape (n_samples,)
-            True class labels.
-            
-        Returns:
-        --------
-        dict
-            returns a dictionary with keys:
-            - "Coverage": Fraction of times true label is in set
-            - "Avg Set Size": Average size of prediction sets
-            - "Singleton Rate": Fraction of sets with size 1
-            - "Singleton Hit": Coverage when set size is 1
-        """
-        n = len(y_true)
-        
-        # 1. Coverage (Fraction of times true label is in set)
-        covered = prediction_mask[np.arange(n), y_true]
-        coverage = np.mean(covered)
-        
-        # 2. Average Set Size
-        set_sizes = np.sum(prediction_mask, axis=1)
-        avg_size = np.mean(set_sizes)
-        
-        # 3. Singleton Rate (Fraction of sets with size 1)
-        is_singleton = (set_sizes == 1)
-        singleton_rate = np.mean(is_singleton)
-        
-        # 4. Singleton Hit Rate (Coverage with set size == 1)
-        if np.sum(is_singleton) > 0:
-            singleton_hit = np.mean(covered[is_singleton])
-        else:
-            singleton_hit = 0.0
-            
-        return {
-            "Coverage": coverage,
-            "Avg Set Size": avg_size,
-            "Singleton Rate": singleton_rate,
-            "Singleton Hit": singleton_hit
-        }
+def efficiency_scorer(y_true, y_pred_sets, target_alpha=0.1):
+    """
+    Custom scoring function for Conformal Prediction.
+    Goal: Minimize Average Set Size with heavy penalty if Coverage is violated.
+    """
+    # 1. Calculate Empirical Coverage
+    n = len(y_true)
+    covered = y_pred_sets[np.arange(n), y_true]
+    coverage = np.mean(covered)
+    
+    # 2. Calculate Average Set Size
+    set_sizes = np.sum(y_pred_sets, axis=1)
+    avg_size = np.mean(set_sizes)
+    
+    # 3. The Penalty Logic
+    required_coverage = (1 - target_alpha)
+    
+    if coverage < required_coverage:
+        # Penalty for not meeting coverage that scales
+        return -1000 + (coverage * 100) 
+    else:
+        return -avg_size
+
 
 # ==========================================
 # 5. EXAMPLE USAGE
