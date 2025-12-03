@@ -1,13 +1,3 @@
-#%%
-
-from google.colab import drive
-drive.flush_and_unmount()
-drive.mount('/content/drive', force_remount=True)
-import sys
-!ls /content/drive/MyDrive/'Colab Notebooks'/conformal-prediction-introduction
-sys.path.append('/content/drive/MyDrive/Colab Notebooks/conformal-prediction-introduction')
-
-#%%
 import torch
 from torchvision import datasets, transforms, models
 from src.data import IndexedDataset
@@ -17,7 +7,6 @@ import torch.nn as nn
 from functools import partial
 
 
-# def main():
 print("Running with",  "cuda" if torch.cuda.is_available() else "cpu")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 data_folder = "dataset"
@@ -81,7 +70,7 @@ model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
 model.fc = nn.Linear(model.fc.in_features, 10)
 model = model.to(device)
 
-#%%
+
 
 # Train the model
 model = train_model(model, trainloader, valloader, device, epochs=epochs, lr=lr)
@@ -95,15 +84,3 @@ evaluate_and_save(model, testloader, device, results_folder, "test_predictions.p
 # Save the model and predictions on the holdout set
 torch.save(model.state_dict(), results_folder + "/cifar10_resnet18.pth")
 evaluate_and_save(model, holdoutloader, device, results_folder, "holdout_predictions.pth")
-#%%
-
-model2 = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-model2.fc = nn.Identity()
-model2 = model2.to(device)
-
-with torch.no_grad():
-        for idx, inputs, targets in valloader:
-            inputs = inputs.to(device)
-            outputs = model2(inputs)
-            print(outputs.shape)
-            break
