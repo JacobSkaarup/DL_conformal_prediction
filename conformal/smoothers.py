@@ -19,7 +19,6 @@ class BaseSmoother(BaseEstimator):
         return self._fit_internal(X_feat, y, scores)
     
     def predict_smooth(self, X):
-        # Should return the 'signal' (e.g. mean score of neighbors/cluster)
         X_feat = self._transform(X)
         return self._predict_internal(X_feat)
 
@@ -31,7 +30,7 @@ class BaseSmoother(BaseEstimator):
     
 class ClusterSmoother(BaseSmoother):
     """
-    For K-Means, GMMs, Decision Trees.
+    For K-Means, GMMs, Decision Trees, etc..
     Treats the input model as a discrete grouper.
     """
     def __init__(self, clustering_model, feature_extractor=None):
@@ -66,7 +65,6 @@ class ClusterSmoother(BaseSmoother):
             clusters = self.clustering_model.predict(X)
             
         # 2. Map IDs to Learned Means
-        # Use a vectorized map or list comprehension for speed
         # Fallback to global_mean_ if a test cluster was never seen in calibration
         signal = np.array([self.means_.get(c, self.global_mean_) for c in clusters])
         return signal
