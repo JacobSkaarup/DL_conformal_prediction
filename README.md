@@ -32,7 +32,9 @@ Conformal prediction is a framework for creating prediction sets with guaranteed
 ├── trainCifar10.ipynb    # CIFAR-10 training notebook
 ├── trainCifar10.py       # CIFAR-10 training script
 ├── setup.py              # Package configuration
+├── requirements.txt      # Required packages
 └── README.md
+
 ```
 
 ## Installation
@@ -152,7 +154,7 @@ This project is open source and available under the MIT License.
 
 ## References
 
-For more on conformal prediction, see:
+For more on the implemented conformal predictions, see:
 - [A Gentle Introduction to Conformal Prediction and Distribution-Free Uncertainty Quantification](https://arxiv.org/abs/2107.03025)
 - [Conformal Prediction Sets for Graph Neural Networks](https://proceedings.mlr.press/v202/h-zargarbashi23a.html)
 
