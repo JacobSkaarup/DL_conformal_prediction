@@ -1,5 +1,4 @@
 from sklearn.base import BaseEstimator
-from sklearn.neighbors import KNeighborsRegressor
 import numpy as np
 
 class BaseSmoother(BaseEstimator):

@@ -4,7 +4,7 @@ A PyTorch-based implementation of conformal prediction methods for uncertainty q
 
 ## Overview
 
-Conformal prediction is a framework for creating prediction sets with guaranteed coverage properties. This project implements conformal prediction techniques on top of deep learning models to provide uncertainty estimates alongside classifications. Unlike standard confidence scores, conformal predictions offer formal statistical guarantees on the fraction of correct predictions.
+Conformal prediction is a framework for creating prediction sets with guaranteed coverage properties. This project implements conformal prediction techniques (TPS, APS, RAPS, and DAPS) on top of deep learning models to provide uncertainty estimates alongside classifications. Unlike standard confidence scores, conformal predictions offer formal statistical guarantees on the fraction of correct predictions.
 
 ## Features
 
@@ -17,18 +17,17 @@ Conformal prediction is a framework for creating prediction sets with guaranteed
 ## Project Structure
 
 ```
-├── conformal/              # Core conformal prediction library
+├── conformal/            # Core conformal prediction library
 │   ├── cp_lib.py          # Main conformal prediction implementations
 │   ├── smoothers.py       # Smoothing functions for conformal methods
 │   └── __init__.py
-├── src/                   # Data and model training utilities
+├── src/                 # Data and model training utilities
 │   ├── data.py           # Data loading and preprocessing
 │   ├── train.py          # Training and evaluation functions
 │   └── __pycache__/
-├── dataset/              # CIFAR-10 dataset
+├── dataset/             # CIFAR-10 dataset
 │   └── cifar-10-batches-py/
-├── results/              # Trained model checkpoints and predictions
-├── conformal_test.ipynb  # Testing and validation notebook
+├── results/             # Trained model checkpoints and predictions
 ├── project_main.ipynb    # Main project workflow notebook
 ├── trainCifar10.ipynb    # CIFAR-10 training notebook
 ├── trainCifar10.py       # CIFAR-10 training script
@@ -99,14 +98,14 @@ X_test = # ... your test data ...
 proba = adapter.predict_proba(X_test)
 
 # Apply conformal prediction with desired significance level
-# (Examples available in conformal_test.ipynb)
+# (Examples available in project_main.ipynb)
 ```
 
 ## Key Components
 
 ### `conformal/cp_lib.py`
 - **TorchAdapter**: Wrapper to make PyTorch models compatible with scikit-learn interface
-- Conformal prediction methods and utilities for uncertainty quantification
+    - Conformal prediction methods and utilities for uncertainty quantification
 
 ### `conformal/smoothers.py`
 - Smoothing techniques for improved conformal prediction performance
@@ -132,7 +131,6 @@ Trained models and predictions are saved in `results/`:
 
 1. **trainCifar10.ipynb** - Complete pipeline for training and validating the model
 2. **project_main.ipynb** - Main analysis and experimentation workflow
-3. **conformal_test.ipynb** - Testing conformal prediction methods
 
 ## Dependencies
 
@@ -156,7 +154,7 @@ This project is open source and available under the MIT License.
 
 For more on conformal prediction, see:
 - [A Gentle Introduction to Conformal Prediction and Distribution-Free Uncertainty Quantification](https://arxiv.org/abs/2107.03025)
-- [Predictive inference with the jackknife+](https://arxiv.org/abs/1905.02928)
+- [Conformal Prediction Sets for Graph Neural Networks](https://proceedings.mlr.press/v202/h-zargarbashi23a.html)
 
 ## Contact
 
